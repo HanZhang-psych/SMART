@@ -10,13 +10,14 @@ import scipy.stats as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import SMART_Funcs as SF
-
+from joblib import Parallel, delayed
 
 class SMART:
-    def __init__(self, fileN, dv1, t1, dv2=None,t2=None):
+    def __init__(self, data, dv1, t1, dv2=None,t2=None):
         # Set defaults
         self.testType= 'bl'
-        self.fileN = fileN
+        #self.fileN = fileN'
+        self.data = data # more flexible data 
         self.dv1 = dv1
         self.t1 = t1
         self.dv2 = dv2
@@ -33,12 +34,17 @@ class SMART:
         self.weights_dv1 = None
         self.smooth_dv2 = None
         self.weights_dv2 = None
+        # Parallel settings
+        self.nJobs = None
         # Permutation params
         self.nPerms = None
         self.baseline = None
+        self.binary = False # added a binary option
         # Permutation containers
         self.permData1 = None
         self.permWeight1 = None 
+        self.permData2 = None # added more containers
+        self.permWeight2 = None 
         # Stats inputs
         self.sigLevel = 0.05
         self.statTest = scipy.stats.ttest_rel
@@ -57,7 +63,7 @@ class SMART:
         self.baselineX = None
         self.baselineY = None
         # Load data 
-        self.data = pd.read_pickle(self.fileN)
+        #self.data = pd.read_pickle(self.fileN) # 
         self.nPP = len(self.data)        
         
     def runSmooth(self, krnSize, timeMin, timeMax, stepSize):
@@ -75,17 +81,21 @@ class SMART:
             self.weights_dv2 = np.zeros((self.nPP, len(self.timeVect)))
             self.__twoSamp__()
         
-    def runPermutations(self, nPerms=1000, baseline=0): 
+    def runPermutations(self, nPerms=1000, baseline=0, nJobs = 8, binary = False): 
         self.nPerms = nPerms
         self.baseline = baseline
+        self.nJobs = nJobs
+        self.binary = binary
         self.permData1 = np.zeros((self.nPP, len(self.timeVect), self.nPerms))
         self.permWeight1 = np.zeros((self.nPP, len(self.timeVect), self.nPerms))
         self.permData2 = np.zeros((self.nPP, len(self.timeVect), self.nPerms))
         self.permWeight2 = np.zeros((self.nPP, len(self.timeVect), self.nPerms))
         if self.testType == 'bl':
-            self.__oneSampPerm__()
+            #self.__oneSampPerm__()
+            self.__oneSampPerm_parallel__(nJobs) # added parallel permutation to improve speed
         else:
-            self.__twoSampPerm__()
+            #self.__twoSampPerm__()
+            self.__twoSampPerm_parallel__(nJobs) # added parallel permutation to improve speed
 
     def runStats(self, sigLevel=0.05):
         self.sigLevel = sigLevel
@@ -148,15 +158,40 @@ class SMART:
                     newX= self.timeVect, 
                     sigma=self.krnSize, 
                     nPerms=self.nPerms, 
-                    baseline=self.baseline
+                    baseline=self.baseline,
+                    binary=self.binary
                     )
-       
+            
+    def __oneSampPerm_parallel__(self, nJobs):
+
+        def runPermutation(i):
+            depV1 = self.data[self.dv1][i]
+            times1 = self.data[self.t1][i]
+            # Run Permutations against baseline
+            permData1, permWeight1, permData2, permWeight2 = SF.permute(
+                times1, 
+                depV1, 
+                newX=self.timeVect, 
+                sigma=self.krnSize, 
+                nPerms=self.nPerms, 
+                baseline=self.baseline,
+                binary=self.binary
+                )
+            return permData1, permWeight1, permData2, permWeight2
+        
+        # Run parallel processing
+        AllResults = Parallel(n_jobs=nJobs,verbose=9)(delayed(runPermutation)(i) for i in range(self.nPP))
+        for i in range(self.nPP):
+            # Run Permutations against baseline
+            self.permData1[i,:,:], self.permWeight1[i,:,:], self.permData2[i,:,:], self.permWeight2[i,:,:] = AllResults[i][0], AllResults[i][1], AllResults[i][2], AllResults[i][3]
+                  
     def __oneSampStats__(self):
         # Extract clusters
         self.sigCL, self.sumTvals = SF.clusterStat_oneSamp(self.smooth_dv1, self.weights_dv1, self.baseline, self.sigLevel)
 
         # Calculate permutation distributions and significance thresholds
         self.permDistr = SF.permuteClusterStat(self.permData1, self.permData2, self.permWeight1, self.permWeight2, self.sigLevel)
+        self.permDistr = self.permDistr[~np.isnan(self.permDistr)] # drop nans otherwise cannot calculate sigThres
         self.sigThres = np.percentile(self.permDistr, 100-(self.sigLevel*100))
         
         # Calculate 95 confidence intervals
@@ -176,7 +211,7 @@ class SMART:
 
         # Plot significant time points
         for ind, i in enumerate(self.sigCL):
-            self.ax1.plot(self.timeVect[i], self.weighDv1Average[i], 'k-', lineWidth=self.lineWidth*1.5)
+            self.ax1.plot(self.timeVect[i], self.weighDv1Average[i], 'k-', linewidth=self.lineWidth*1.5)
             # Plot asterix for signficant clusters
             if self.sumTvals[ind] >= self.sigThres:
                 xPos = np.average(self.timeVect[i])
@@ -239,8 +274,27 @@ class SMART:
             times2 = self.data[self.t2][i]
 
             # Run Permutations Between conditions
-            self.permData1[i,:,:], self.permWeight1[i,:,:], self.permData2[i,:,:], self.permWeight2[i,:,:] = SF.permute(times1, depV1, times2, depV2, self.timeVect, self.krnSize, self.nPerms)
+            self.permData1[i,:,:], self.permWeight1[i,:,:], self.permData2[i,:,:], self.permWeight2[i,:,:] = SF.permute(times1, depV1, times2, depV2, self.timeVect, self.krnSize, self.nPerms, binary=self.binary)
+    
+    def __twoSampPerm_parallel__(self, nJobs):
         
+        def runPermutation_twoSamp(i):
+            #  Extract data for participant            
+            depV1 = self.data[self.dv1][i]            
+            times1 = self.data[self.t1][i]
+            depV2 = self.data[self.dv2][i]
+            times2 = self.data[self.t2][i]
+            # Run Permutations Between conditions
+            permData1, permWeight1, permData2, permWeight2 = SF.permute(times1, depV1, times2, depV2, self.timeVect, self.krnSize, self.nPerms, binary=self.binary)
+            return permData1, permWeight1, permData2, permWeight2
+        
+        # Run parallel processing
+        AllResults = Parallel(n_jobs=nJobs,verbose=9)(delayed(runPermutation_twoSamp)(i) for i in range(self.nPP))
+        for i in range(self.nPP):
+            # Run Permutations against baseline
+            self.permData1[i,:,:], self.permWeight1[i,:,:] = AllResults[i][0], AllResults[i][1]
+            self.permData2[i,:,:], self.permWeight2[i,:,:]= AllResults[i][2], AllResults[i][3]
+
     def __twoSampStats__(self):
         # Extract clusters
         self.sigCL, self.sumTvals = SF.clusterStat_rel(self.smooth_dv1, self.smooth_dv2, self.weights_dv1, self.weights_dv2, self.sigLevel)
@@ -248,6 +302,7 @@ class SMART:
         # Calculate permutation distributions and significance thresholds
         # Weighted permutations
         self.permDistr = SF.permuteClusterStat(self.permData1, self.permData2, self.permWeight1, self.permWeight2, self.sigLevel)
+        self.permDistr = self.permDistr[~np.isnan(self.permDistr)] # drop nans otherwise cannot calculate sigThres
         self.sigThres = np.percentile(self.permDistr, 100-(self.sigLevel*100))
         
         # Calculate 95 confidence intervals
@@ -273,8 +328,8 @@ class SMART:
         
         # Plot significant time points
         for ind, i in enumerate(self.sigCL):
-            self.ax1.plot(self.timeVect[i], self.weighDv1Average[i], 'k-', lineWidth=self.lineWidth*1.5)
-            self.ax1.plot(self.timeVect[i], self.weighDv2Average[i], 'k-', lineWidth=self.lineWidth*1.5)
+            self.ax1.plot(self.timeVect[i], self.weighDv1Average[i], 'k-', linewidth=self.lineWidth*1.5)
+            self.ax1.plot(self.timeVect[i], self.weighDv2Average[i], 'k-', linewidth=self.lineWidth*1.5)
             # Plot asterix for signficant clusters
             if self.sumTvals[ind] >= self.sigThres:
                 xPos = np.average(self.timeVect[i])
