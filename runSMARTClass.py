@@ -90,11 +90,11 @@ oneSamp.runPlot()
 #==============================================================================
 # Run smoothing
 #==============================================================================
-# pairedSamp = SMART(fName, depVar1, timeVar1, depVar2, timeVar2)
-# pairedSamp.runSmooth(krnSize, minTime, maxTime, stepTime)
-# pairedSamp.runPermutations(nPerm)
-# pairedSamp.runStats(sigLevel)
-# pairedSamp.runPlot()
+pairedSamp = SMART(fName, depVar1, timeVar1, depVar2, timeVar2)
+pairedSamp.runSmooth(krnSize, minTime, maxTime, stepTime)
+pairedSamp.runPermutations(nPerm)
+pairedSamp.runStats(sigLevel)
+pairedSamp.runPlot()
 
 #==============================================================================
 # Extract data

@@ -3,6 +3,8 @@
 Created on Thu May 03 13:39:12 2018
 
 @author: Jonathan van Leeuwen
+
+@ plus edits made by Han Zhang to fix errors
 """
 
 #==============================================================================
@@ -1408,7 +1410,8 @@ def permuteClusterStat(perm1, perm2, permWeights1, permWeights2, sigThresh=0.05)
     permDistr = []
     tValues, pValues = weighted_ttest_rel(perm1, perm2, permWeights1, permWeights2)
     tValues = tValues.transpose()
-    sigArr = (pValues<0.05).transpose()
+    #sigArr = (pValues<0.05).transpose()
+    sigArr = (pValues<sigThresh).transpose() # HZ: use sigThresh
     for indx in range(len(perm1[0,0,:])):
         cl, clInd= getCluster(sigArr[indx,:])
         sigCl = [clInd[i] for i in range(len(cl)) if cl[i][0] == True]
